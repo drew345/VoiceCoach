@@ -1,62 +1,123 @@
-import { useState } from "react";
-import { StyleSheet, Pressable } from "react-native";
+import { useEffect, useState } from "react";
+import { StyleSheet, Pressable, Alert } from "react-native";
+import { Audio } from "expo-av";
 
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 
 const PROMPTS: string[] = [
   "You don't have to be great to start, but you have to start to be great.",
-  "Tell me what you want, and I'll tell you who you are.",
-  "The truth is rarely pure and never simple.",
-  "I have measured out my life with coffee spoons.",
   "Courage is grace under pressure.",
-  "If you can’t explain it simply, you don’t understand it well enough.",
-  "Today, I choose clarity over confusion.",
-  "The work is the work. Do it anyway.",
-  "I can be calm and intense at the same time.",
+  "Speak slower than you think you need to.",
   "Make it sound effortless—then do it again.",
   "You are not late. You are learning.",
-  "Speak slower than you think you need to.",
 ];
 
-function randomIndex(maxExclusive: number) {
-  return Math.floor(Math.random() * maxExclusive);
+function randomIndex(max: number) {
+  return Math.floor(Math.random() * max);
 }
 
 export default function HomeScreen() {
-  const [idx, setIdx] = useState(() => randomIndex(PROMPTS.length));
-  const [tapCount, setTapCount] = useState(0);
+  const [promptIdx, setPromptIdx] = useState(() =>
+    randomIndex(PROMPTS.length)
+  );
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
 
-  const prompt = PROMPTS[idx];
+  const prompt = PROMPTS[promptIdx];
 
-  const nextPrompt = () => {
-    if (PROMPTS.length <= 1) return;
+  useEffect(() => {
+    return () => {
+      sound?.unloadAsync();
+    };
+  }, [sound]);
 
+  async function requestMicPermission() {
+    const { status } = await Audio.requestPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Microphone permission is required.");
+      return false;
+    }
+    return true;
+  }
+
+  async function startRecording() {
+    const ok = await requestMicPermission();
+    if (!ok) return;
+
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+
+      const rec = new Audio.Recording();
+      await rec.prepareToRecordAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      await rec.startAsync();
+      setRecording(rec);
+    } catch (err) {
+      Alert.alert("Failed to start recording");
+    }
+  }
+
+  async function stopRecording() {
+    if (!recording) return;
+
+    await recording.stopAndUnloadAsync();
+    const uri = recording.getURI();
+
+    const { sound } = await Audio.Sound.createAsync({ uri });
+    setSound(sound);
+    setRecording(null);
+  }
+
+  async function playRecording() {
+    if (!sound) return;
+    await sound.replayAsync();
+  }
+
+  function nextPrompt() {
     let next = randomIndex(PROMPTS.length);
-    while (next === idx) next = randomIndex(PROMPTS.length);
-
-    setIdx(next);
-    setTapCount((c) => c + 1);
-  };
+    while (next === promptIdx) {
+      next = randomIndex(PROMPTS.length);
+    }
+    setPromptIdx(next);
+  }
 
   return (
     <ThemedView style={styles.container}>
-      <ThemedText type="title" style={styles.title}>
-        VoiceCoach
-      </ThemedText>
+      <ThemedText type="title">VoiceCoach</ThemedText>
 
       <ThemedView style={styles.card}>
-        <ThemedText type="subtitle" style={styles.label}>
-          Prompt
-        </ThemedText>
+        <ThemedText type="subtitle">Prompt</ThemedText>
         <ThemedText style={styles.prompt}>{prompt}</ThemedText>
       </ThemedView>
 
-      <Pressable style={styles.button} onPress={nextPrompt}>
-        <ThemedText style={styles.buttonText}>New prompt</ThemedText>
-      </Pressable>
+      <ThemedView style={styles.controls}>
+        {!recording ? (
+          <Pressable style={styles.button} onPress={startRecording}>
+            <ThemedText>Record</ThemedText>
+          </Pressable>
+        ) : (
+          <Pressable style={styles.button} onPress={stopRecording}>
+            <ThemedText>Stop</ThemedText>
+          </Pressable>
+        )}
 
-      <ThemedText style={styles.note}>Button taps: {tapCount}</ThemedText>
+        <Pressable
+          style={[styles.button, !sound && styles.disabled]}
+          onPress={playRecording}
+          disabled={!sound}
+        >
+          <ThemedText>Play</ThemedText>
+        </Pressable>
+
+        <Pressable style={styles.button} onPress={nextPrompt}>
+          <ThemedText>New prompt</ThemedText>
+        </Pressable>
+      </ThemedView>
     </ThemedView>
   );
 }
@@ -68,33 +129,26 @@ const styles = StyleSheet.create({
     gap: 16,
     justifyContent: "center",
   },
-  title: {
-    textAlign: "center",
-  },
   card: {
     padding: 16,
     borderRadius: 12,
-    gap: 10,
-  },
-  label: {
-    opacity: 0.8,
+    gap: 8,
   },
   prompt: {
     fontSize: 18,
     lineHeight: 26,
   },
+  controls: {
+    gap: 12,
+    alignItems: "center",
+  },
   button: {
-    alignSelf: "center",
     paddingVertical: 12,
     paddingHorizontal: 18,
     borderRadius: 10,
     borderWidth: 1,
   },
-  buttonText: {
-    fontSize: 16,
-  },
-  note: {
-    textAlign: "center",
-    opacity: 0.75,
+  disabled: {
+    opacity: 0.4,
   },
 });
