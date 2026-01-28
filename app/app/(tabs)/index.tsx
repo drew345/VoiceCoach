@@ -10,34 +10,34 @@ function randomIndex(max: number) {
   return Math.floor(Math.random() * max);
 }
 
-// Map dB meter values (typically around -160..0) into 0..1.
+// Map dB meter values (often ~ -160..0) into 0..1.
 function meterDbToLevel(db: number | null | undefined) {
   if (db === null || db === undefined) return 0;
-  // Clamp to a realistic range
   const clamped = Math.max(-60, Math.min(0, db));
-  // -60 => 0, 0 => 1
-  return (clamped + 60) / 60;
+  return (clamped + 60) / 60; // -60 => 0, 0 => 1
 }
 
 export default function HomeScreen() {
-  const [promptIdx, setPromptIdx] = useState(() =>
-    randomIndex(PROMPTS.length)
-  );
+  const [promptIdx, setPromptIdx] = useState(() => randomIndex(PROMPTS.length));
+  const prompt = PROMPTS[promptIdx];
 
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [sound, setSound] = useState<Audio.Sound | null>(null);
 
+  const [isPlaying, setIsPlaying] = useState(false);
+
   const [elapsedMs, setElapsedMs] = useState(0);
-  const [level, setLevel] = useState(0); // 0..1 input meter level
+  const [level, setLevel] = useState(0); // 0..1
+  const [hasRealMeter, setHasRealMeter] = useState(false);
 
-  const tickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const prompt = PROMPTS[promptIdx];
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fallbackMeterRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     return () => {
-      if (tickIntervalRef.current) clearInterval(tickIntervalRef.current);
-      sound?.unloadAsync();
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (fallbackMeterRef.current) clearInterval(fallbackMeterRef.current);
+      sound?.unloadAsync().catch(() => {});
       recording?.stopAndUnloadAsync().catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -52,12 +52,39 @@ export default function HomeScreen() {
     return true;
   }
 
+  function startFallbackMeter() {
+    // Smooth-ish visual feedback even when real metering is unavailable.
+    // This is intentionally "approximate" — it reassures the user that recording is active.
+    if (fallbackMeterRef.current) clearInterval(fallbackMeterRef.current);
+    fallbackMeterRef.current = setInterval(() => {
+      setLevel((prev) => {
+        const target = 0.15 + Math.random() * 0.75; // 0.15..0.9
+        // ease toward target a bit
+        return prev + (target - prev) * 0.35;
+      });
+    }, 120);
+  }
+
+  function stopFallbackMeter() {
+    if (fallbackMeterRef.current) {
+      clearInterval(fallbackMeterRef.current);
+      fallbackMeterRef.current = null;
+    }
+  }
+
   async function startRecording() {
     const ok = await requestMicPermission();
     if (!ok) return;
 
     try {
-      // Clear previous playback so Play always matches the latest take.
+      // Stop playback if currently playing
+      if (sound && isPlaying) {
+        await sound.stopAsync();
+        await sound.setPositionAsync(0);
+        setIsPlaying(false);
+      }
+
+      // Clear previous playback so Play matches the latest take
       if (sound) {
         await sound.unloadAsync();
         setSound(null);
@@ -65,6 +92,7 @@ export default function HomeScreen() {
 
       setElapsedMs(0);
       setLevel(0);
+      setHasRealMeter(false);
 
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
@@ -73,42 +101,51 @@ export default function HomeScreen() {
 
       const rec = new Audio.Recording();
 
-      // Enable metering so we can show a live input level.
       const recordingOptions: Audio.RecordingOptions = {
         ...Audio.RecordingOptionsPresets.HIGH_QUALITY,
         ios: {
-          ...Audio.RecordingOptionsPresets.HIGH_QUALITY.ios,
-          isMeteringEnabled: true,
-        },
-        android: {
-          ...Audio.RecordingOptionsPresets.HIGH_QUALITY.android,
-          isMeteringEnabled: true,
-        },
+  ...(Audio.RecordingOptionsPresets.HIGH_QUALITY.ios as any),
+  isMeteringEnabled: true,
+},
+android: {
+  ...(Audio.RecordingOptionsPresets.HIGH_QUALITY.android as any),
+  isMeteringEnabled: true,
+},
+
       };
 
-      // Update interval for status callbacks (ms)
       rec.setProgressUpdateInterval(100);
 
-      // Read metering from status updates
       rec.setOnRecordingStatusUpdate((status) => {
         if (!status.isRecording) return;
 
-        // @ts-expect-error: metering exists on RecordingStatus in expo-av
-        const db = status.metering as number | undefined;
-        setLevel(meterDbToLevel(db));
+        // metering may be undefined on some platforms/runtimes.
+        // @ts-ignore: expo-av status may include `metering` at runtime, but types don't always reflect it
+       const db = status.metering as number | undefined;
+
+        if (typeof db === "number") {
+          setHasRealMeter(true);
+          stopFallbackMeter();
+          setLevel(meterDbToLevel(db));
+        } else if (!hasRealMeter) {
+          // keep fallback going
+        }
       });
 
       await rec.prepareToRecordAsync(recordingOptions);
       await rec.startAsync();
       setRecording(rec);
 
+      // Start fallback meter immediately; it will auto-disable if real metering appears.
+      startFallbackMeter();
+
       // Timer UI tick
-      tickIntervalRef.current = setInterval(() => {
-        setElapsedMs((ms) => ms + 100);
-      }, 100);
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = setInterval(() => setElapsedMs((ms) => ms + 100), 100);
     } catch {
       setRecording(null);
       setLevel(0);
+      stopFallbackMeter();
       Alert.alert("Failed to start recording");
     }
   }
@@ -116,10 +153,11 @@ export default function HomeScreen() {
   async function stopRecording() {
     if (!recording) return;
 
-    if (tickIntervalRef.current) {
-      clearInterval(tickIntervalRef.current);
-      tickIntervalRef.current = null;
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
     }
+    stopFallbackMeter();
 
     try {
       await recording.stopAndUnloadAsync();
@@ -129,7 +167,28 @@ export default function HomeScreen() {
 
       if (!uri) return;
 
-      const { sound } = await Audio.Sound.createAsync({ uri });
+      const { sound } = await Audio.Sound.createAsync(
+  { uri },
+  { shouldPlay: false, isLooping: false }
+);
+
+
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) {
+          setIsPlaying(false);
+          return;
+        }
+        setIsPlaying(status.isPlaying);
+
+        // When playback finishes, flip back to Play state
+               if (status.didJustFinish) {
+          setIsPlaying(false);
+          // Don't reset position here; it can trigger looping on some platforms.
+          // Next Play starts from 0 anyway.
+        }
+
+      });
+
       setSound(sound);
     } catch {
       setRecording(null);
@@ -138,9 +197,20 @@ export default function HomeScreen() {
     }
   }
 
-  async function playRecording() {
+  async function playOrStop() {
     if (!sound) return;
-    await sound.replayAsync();
+
+    const status = await sound.getStatusAsync();
+    if (!status.isLoaded) return;
+
+    if (status.isPlaying) {
+      await sound.stopAsync();
+  await sound.setIsLoopingAsync(false);
+    await sound.setPositionAsync(0);
+      setIsPlaying(false);
+    } else {
+      await sound.playFromPositionAsync(0);
+    }
   }
 
   function nextPrompt() {
@@ -172,11 +242,13 @@ export default function HomeScreen() {
             </View>
 
             <ThemedText style={styles.meterHint}>
-              Input level
+              {hasRealMeter ? "Input level (metered)" : "Input level (visual feedback)"}
             </ThemedText>
           </>
         ) : sound ? (
-          <ThemedText style={styles.readyLine}>Take ready. Press Play.</ThemedText>
+          <ThemedText style={styles.readyLine}>
+            Take ready. Press {isPlaying ? "Stop" : "Play"}.
+          </ThemedText>
         ) : (
           <ThemedText style={styles.readyLine}>Press Record to start.</ThemedText>
         )}
@@ -195,17 +267,13 @@ export default function HomeScreen() {
 
         <Pressable
           style={[styles.button, (!sound || isRecording) && styles.disabled]}
-          onPress={playRecording}
+          onPress={playOrStop}
           disabled={!sound || isRecording}
         >
-          <ThemedText>Play</ThemedText>
+          <ThemedText>{isPlaying ? "Stop" : "Play"}</ThemedText>
         </Pressable>
 
-        <Pressable
-          style={styles.button}
-          onPress={nextPrompt}
-          disabled={isRecording}
-        >
+        <Pressable style={styles.button} onPress={nextPrompt} disabled={isRecording}>
           <ThemedText>New prompt</ThemedText>
         </Pressable>
       </ThemedView>
@@ -236,16 +304,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     opacity: 0.75,
   },
-  meterTrack: {
+    meterTrack: {
     height: 10,
     borderRadius: 999,
     overflow: "hidden",
     borderWidth: 1,
-    opacity: 0.85,
+    borderColor: "rgba(0,0,0,0.25)",
+    backgroundColor: "rgba(0,0,0,0.10)",
   },
-  meterFill: {
+
+    meterFill: {
     height: "100%",
+    backgroundColor: "rgba(0,0,0,0.65)",
   },
+
   meterHint: {
     fontSize: 12,
     opacity: 0.65,
@@ -260,7 +332,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
   },
-  disabled: {
+    disabled: {
     opacity: 0.4,
-  },
+  }
 });
