@@ -29,6 +29,8 @@ export default function HomeScreen() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [level, setLevel] = useState(0); // 0..1
   const [hasRealMeter, setHasRealMeter] = useState(false);
+  const WAVE_POINTS = 50; // ~5 seconds at 10 updates/sec
+  const [wave, setWave] = useState<number[]>([]);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fallbackMeterRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -57,11 +59,19 @@ export default function HomeScreen() {
     // This is intentionally "approximate" — it reassures the user that recording is active.
     if (fallbackMeterRef.current) clearInterval(fallbackMeterRef.current);
     fallbackMeterRef.current = setInterval(() => {
-      setLevel((prev) => {
-        const target = 0.15 + Math.random() * 0.75; // 0.15..0.9
-        // ease toward target a bit
-        return prev + (target - prev) * 0.35;
-      });
+   setLevel((prev) => {
+  const target = 0.15 + Math.random() * 0.75; // 0.15..0.9
+  const lv = prev + (target - prev) * 0.35;
+
+setWave((prev) => {
+  const base = prev.length === WAVE_POINTS ? prev : Array(WAVE_POINTS).fill(0);
+  return [...base.slice(1), lv]; // drop oldest, add newest at end
+});
+
+
+  return lv;
+});
+
     }, 120);
   }
 
@@ -93,6 +103,9 @@ export default function HomeScreen() {
       setElapsedMs(0);
       setLevel(0);
       setHasRealMeter(false);
+      setWave(Array(WAVE_POINTS).fill(0));
+
+
 
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
@@ -126,7 +139,15 @@ android: {
         if (typeof db === "number") {
           setHasRealMeter(true);
           stopFallbackMeter();
-          setLevel(meterDbToLevel(db));
+          
+          const lv = meterDbToLevel(db);
+setLevel(lv);
+setWave((prev) => {
+  const base = prev.length === WAVE_POINTS ? prev : Array(WAVE_POINTS).fill(0);
+  return [...base.slice(1), lv]; // drop oldest, add newest at end
+});
+
+
         } else if (!hasRealMeter) {
           // keep fallback going
         }
@@ -164,6 +185,8 @@ android: {
       const uri = recording.getURI();
       setRecording(null);
       setLevel(0);
+      setWave([]);
+
 
       if (!uri) return;
 
@@ -241,6 +264,18 @@ android: {
               <View style={[styles.meterFill, { width: `${meterWidthPct}%` }]} />
             </View>
 
+            <View style={styles.waveRow} accessibilityLabel="Live waveform">
+              {wave.map((v, i) => (
+                <View
+                  key={i}
+                  style={[
+                    styles.waveBar,
+                    { height: 4 + Math.round(v * 28) }, // min 4px, max ~32px
+                  ]}
+                />
+              ))}
+            </View>
+
             <ThemedText style={styles.meterHint}>
               {hasRealMeter ? "Input level (metered)" : "Input level (visual feedback)"}
             </ThemedText>
@@ -316,6 +351,20 @@ const styles = StyleSheet.create({
     meterFill: {
     height: "100%",
     backgroundColor: "rgba(0,0,0,0.65)",
+  },
+
+    waveRow: {
+    height: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    marginTop: 6,
+    overflow: "hidden",
+  },
+  waveBar: {
+    width: 3,
+    borderRadius: 2,
+    backgroundColor: "rgba(0,0,0,0.55)",
   },
 
   meterHint: {
