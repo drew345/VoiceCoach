@@ -260,10 +260,7 @@ setWave((prev) => {
               ● Recording… {seconds}s
             </ThemedText>
 
-            <View style={styles.meterTrack} accessibilityLabel="Input level meter">
-              <View style={[styles.meterFill, { width: `${meterWidthPct}%` }]} />
-            </View>
-
+ 
             <View style={styles.waveRow} accessibilityLabel="Live waveform">
               {wave.map((v, i) => (
                 <View
@@ -276,9 +273,7 @@ setWave((prev) => {
               ))}
             </View>
 
-            <ThemedText style={styles.meterHint}>
-              {hasRealMeter ? "Input level (metered)" : "Input level (visual feedback)"}
-            </ThemedText>
+           
           </>
         ) : sound ? (
           <ThemedText style={styles.readyLine}>
