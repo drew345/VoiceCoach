@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { StyleSheet, Pressable, Alert, View } from "react-native";
+import { Alert, Pressable, StyleSheet, View } from "react-native";
 import { Audio } from "expo-av";
 
 import { ThemedText } from "@/components/themed-text";
@@ -23,14 +23,14 @@ export default function HomeScreen() {
 
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [sound, setSound] = useState<Audio.Sound | null>(null);
-
+  const [soundPromptIdx, setSoundPromptIdx] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-
   const [elapsedMs, setElapsedMs] = useState(0);
   const [level, setLevel] = useState(0); // 0..1
   const [hasRealMeter, setHasRealMeter] = useState(false);
-  const WAVE_POINTS = 50; // ~5 seconds at 10 updates/sec
   const [wave, setWave] = useState<number[]>([]);
+
+  const WAVE_POINTS = 50; // ~5 seconds at 10 updates/sec
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fallbackMeterRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -51,27 +51,28 @@ export default function HomeScreen() {
       Alert.alert("Microphone permission is required.");
       return false;
     }
+
     return true;
   }
 
   function startFallbackMeter() {
     // Smooth-ish visual feedback even when real metering is unavailable.
-    // This is intentionally "approximate" — it reassures the user that recording is active.
+    // This is intentionally approximate: it reassures the user that recording is active.
     if (fallbackMeterRef.current) clearInterval(fallbackMeterRef.current);
+
     fallbackMeterRef.current = setInterval(() => {
-   setLevel((prev) => {
-  const target = 0.15 + Math.random() * 0.75; // 0.15..0.9
-  const lv = prev + (target - prev) * 0.35;
+      setLevel((prev) => {
+        const target = 0.15 + Math.random() * 0.75; // 0.15..0.9
+        const nextLevel = prev + (target - prev) * 0.35;
 
-setWave((prev) => {
-  const base = prev.length === WAVE_POINTS ? prev : Array(WAVE_POINTS).fill(0);
-  return [...base.slice(1), lv]; // drop oldest, add newest at end
-});
+        setWave((prevWave) => {
+          const base =
+            prevWave.length === WAVE_POINTS ? prevWave : Array(WAVE_POINTS).fill(0);
+          return [...base.slice(1), nextLevel];
+        });
 
-
-  return lv;
-});
-
+        return nextLevel;
+      });
     }, 120);
   }
 
@@ -87,17 +88,16 @@ setWave((prev) => {
     if (!ok) return;
 
     try {
-      // Stop playback if currently playing
       if (sound && isPlaying) {
         await sound.stopAsync();
         await sound.setPositionAsync(0);
         setIsPlaying(false);
       }
 
-      // Clear previous playback so Play matches the latest take
       if (sound) {
         await sound.unloadAsync();
         setSound(null);
+        setSoundPromptIdx(null);
       }
 
       setElapsedMs(0);
@@ -105,51 +105,44 @@ setWave((prev) => {
       setHasRealMeter(false);
       setWave(Array(WAVE_POINTS).fill(0));
 
-
-
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
       });
 
       const rec = new Audio.Recording();
-
       const recordingOptions: Audio.RecordingOptions = {
         ...Audio.RecordingOptionsPresets.HIGH_QUALITY,
         ios: {
-  ...(Audio.RecordingOptionsPresets.HIGH_QUALITY.ios as any),
-  isMeteringEnabled: true,
-},
-android: {
-  ...(Audio.RecordingOptionsPresets.HIGH_QUALITY.android as any),
-  isMeteringEnabled: true,
-},
-
+          ...(Audio.RecordingOptionsPresets.HIGH_QUALITY.ios as any),
+          isMeteringEnabled: true,
+        },
+        android: {
+          ...(Audio.RecordingOptionsPresets.HIGH_QUALITY.android as any),
+          isMeteringEnabled: true,
+        },
       };
 
       rec.setProgressUpdateInterval(100);
-
       rec.setOnRecordingStatusUpdate((status) => {
         if (!status.isRecording) return;
 
-        // metering may be undefined on some platforms/runtimes.
-        // @ts-ignore: expo-av status may include `metering` at runtime, but types don't always reflect it
-       const db = status.metering as number | undefined;
+        // @ts-ignore: expo-av status may include `metering` at runtime, but types do not always reflect it.
+        const db = status.metering as number | undefined;
 
         if (typeof db === "number") {
           setHasRealMeter(true);
           stopFallbackMeter();
-          
-          const lv = meterDbToLevel(db);
-setLevel(lv);
-setWave((prev) => {
-  const base = prev.length === WAVE_POINTS ? prev : Array(WAVE_POINTS).fill(0);
-  return [...base.slice(1), lv]; // drop oldest, add newest at end
-});
 
-
+          const nextLevel = meterDbToLevel(db);
+          setLevel(nextLevel);
+          setWave((prevWave) => {
+            const base =
+              prevWave.length === WAVE_POINTS ? prevWave : Array(WAVE_POINTS).fill(0);
+            return [...base.slice(1), nextLevel];
+          });
         } else if (!hasRealMeter) {
-          // keep fallback going
+          // Keep fallback animation running when native metering is unavailable.
         }
       });
 
@@ -157,10 +150,8 @@ setWave((prev) => {
       await rec.startAsync();
       setRecording(rec);
 
-      // Start fallback meter immediately; it will auto-disable if real metering appears.
       startFallbackMeter();
 
-      // Timer UI tick
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => setElapsedMs((ms) => ms + 100), 100);
     } catch {
@@ -183,36 +174,33 @@ setWave((prev) => {
     try {
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
+
       setRecording(null);
       setLevel(0);
       setWave([]);
 
-
       if (!uri) return;
 
-      const { sound } = await Audio.Sound.createAsync(
-  { uri },
-  { shouldPlay: false, isLooping: false }
-);
+      const { sound: nextSound } = await Audio.Sound.createAsync(
+        { uri },
+        { shouldPlay: false, isLooping: false }
+      );
 
-
-      sound.setOnPlaybackStatusUpdate((status) => {
+      nextSound.setOnPlaybackStatusUpdate((status) => {
         if (!status.isLoaded) {
           setIsPlaying(false);
           return;
         }
+
         setIsPlaying(status.isPlaying);
 
-        // When playback finishes, flip back to Play state
-               if (status.didJustFinish) {
+        if (status.didJustFinish) {
           setIsPlaying(false);
-          // Don't reset position here; it can trigger looping on some platforms.
-          // Next Play starts from 0 anyway.
         }
-
       });
 
-      setSound(sound);
+      setSound(nextSound);
+      setSoundPromptIdx(promptIdx);
     } catch {
       setRecording(null);
       setLevel(0);
@@ -223,13 +211,17 @@ setWave((prev) => {
   async function playOrStop() {
     if (!sound) return;
 
+    if (soundPromptIdx !== null && promptIdx !== soundPromptIdx) {
+      setPromptIdx(soundPromptIdx);
+    }
+
     const status = await sound.getStatusAsync();
     if (!status.isLoaded) return;
 
     if (status.isPlaying) {
       await sound.stopAsync();
-  await sound.setIsLoopingAsync(false);
-    await sound.setPositionAsync(0);
+      await sound.setIsLoopingAsync(false);
+      await sound.setPositionAsync(0);
       setIsPlaying(false);
     } else {
       await sound.playFromPositionAsync(0);
@@ -244,7 +236,8 @@ setWave((prev) => {
 
   const isRecording = !!recording;
   const seconds = (elapsedMs / 1000).toFixed(1);
-  const meterWidthPct = Math.round(level * 100);
+  const displayedWave =
+    isRecording && wave.length > 0 ? wave : Array(WAVE_POINTS).fill(0.08);
 
   return (
     <ThemedView style={styles.container}>
@@ -254,34 +247,30 @@ setWave((prev) => {
         <ThemedText type="subtitle">Prompt</ThemedText>
         <ThemedText style={styles.prompt}>{prompt}</ThemedText>
 
-        {isRecording ? (
-          <>
-            <ThemedText style={styles.recordingLine}>
-              ● Recording… {seconds}s
+        <View style={styles.statusArea}>
+          {isRecording ? (
+            <ThemedText style={styles.recordingLine}>Recording... {seconds}s</ThemedText>
+          ) : sound ? (
+            <ThemedText style={styles.readyLine}>
+              Take ready. Press {isPlaying ? "Stop" : "Play"}.
             </ThemedText>
+          ) : (
+            <ThemedText style={styles.readyLine}>Press Record to start.</ThemedText>
+          )}
 
- 
-            <View style={styles.waveRow} accessibilityLabel="Live waveform">
-              {wave.map((v, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.waveBar,
-                    { height: 4 + Math.round(v * 28) }, // min 4px, max ~32px
-                  ]}
-                />
-              ))}
-            </View>
-
-           
-          </>
-        ) : sound ? (
-          <ThemedText style={styles.readyLine}>
-            Take ready. Press {isPlaying ? "Stop" : "Play"}.
-          </ThemedText>
-        ) : (
-          <ThemedText style={styles.readyLine}>Press Record to start.</ThemedText>
-        )}
+          <View style={styles.waveRow} accessibilityLabel="Live waveform">
+            {displayedWave.map((v, i) => (
+              <View
+                key={i}
+                style={[
+                  styles.waveBar,
+                  !isRecording && styles.waveBarIdle,
+                  { height: isRecording ? 4 + Math.round(v * 28) : 2 + Math.round(v * 4) },
+                ]}
+              />
+            ))}
+          </View>
+        </View>
       </ThemedView>
 
       <ThemedView style={styles.controls}>
@@ -334,21 +323,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     opacity: 0.75,
   },
-    meterTrack: {
-    height: 10,
-    borderRadius: 999,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.25)",
-    backgroundColor: "rgba(0,0,0,0.10)",
+  statusArea: {
+    minHeight: 60,
+    justifyContent: "flex-start",
   },
-
-    meterFill: {
-    height: "100%",
-    backgroundColor: "rgba(0,0,0,0.65)",
-  },
-
-    waveRow: {
+  waveRow: {
     height: 36,
     flexDirection: "row",
     alignItems: "center",
@@ -361,10 +340,8 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: "rgba(0,0,0,0.55)",
   },
-
-  meterHint: {
-    fontSize: 12,
-    opacity: 0.65,
+  waveBarIdle: {
+    backgroundColor: "rgba(0,0,0,0.16)",
   },
   controls: {
     gap: 12,
@@ -376,7 +353,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
   },
-    disabled: {
+  disabled: {
     opacity: 0.4,
-  }
+  },
 });
