@@ -20,6 +20,7 @@ function meterDbToLevel(db: number | null | undefined) {
 export default function HomeScreen() {
   const [promptIdx, setPromptIdx] = useState(() => randomIndex(PROMPTS.length));
   const prompt = PROMPTS[promptIdx];
+  const promptLabel = prompt.language === "ko" ? "Prompt • Korean" : "Prompt • English";
 
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [sound, setSound] = useState<Audio.Sound | null>(null);
@@ -244,8 +245,8 @@ export default function HomeScreen() {
       <ThemedText type="title">VoiceCoach</ThemedText>
 
       <ThemedView style={styles.card}>
-        <ThemedText type="subtitle">Prompt</ThemedText>
-        <ThemedText style={styles.prompt}>{prompt}</ThemedText>
+        <ThemedText type="subtitle">{promptLabel}</ThemedText>
+        <ThemedText style={styles.prompt}>{prompt.text}</ThemedText>
 
         <View style={styles.statusArea}>
           {isRecording ? (
